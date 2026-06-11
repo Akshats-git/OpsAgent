@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en" x-data="app()" x-init="init()">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>OpsAgent Dashboard</title>
+
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <!-- Alpine.js -->
+  <script defer src="https://cdn.jsdelivr.net/npm/alpinejs@3.x.x/dist/cdn.min.js"></script>
+  <!-- Chart.js -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: { 50:'#eff6ff',100:'#dbeafe',500:'#3b82f6',600:'#2563eb',700:'#1d4ed8',900:'#1e3a8a' },
+          },
+          fontFamily: { sans: ['Inter','system-ui','sans-serif'] },
+        }
+      }
+    };
+  </script>
+
+  <style>
+    [x-cloak] { display: none !important; }
+    .glass { background: rgba(255,255,255,0.05); backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,0.1); }
+    .stat-card { transition: transform 0.2s, box-shadow 0.2s; }
+    .stat-card:hover { transform: translateY(-2px); box-shadow: 0 8px 30px rgba(0,0,0,0.3); }
+    .bar-fill { transition: width 0.8s cubic-bezier(0.4,0,0.2,1); }
+    .fade-in { animation: fadeIn 0.4s ease; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-track { background: #1e293b; }
+    ::-webkit-scrollbar-thumb { background: #475569; border-radius: 3px; }
+  </style>
+</head>
+
+<body class="bg-slate-950 text-slate-100 font-sans min-h-screen antialiased">
+
+<!-- ═══════════════════════════ TOPBAR ═══════════════════════════ -->
+<header class="sticky top-0 z-50 bg-slate-900/90 backdrop-blur border-b border-slate-800 px-6 py-3 flex items-center justify-between">
+  <div class="flex items-center gap-3">
+    <div class="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center text-sm font-bold shadow">⚡</div>
+    <div>
+      <h1 class="text-base font-semibold leading-none" x-text="stats.orgName || 'OpsAgent'"></h1>
+      <p class="text-xs text-slate-400 mt-0.5">Operations Intelligence Dashboard</p>
+    </div>
+  </div>
+
+  <div class="flex items-center gap-3">
+    <!-- Last refresh -->
+    <span class="text-xs text-slate-500" x-text="lastRefresh ? 'Updated ' + lastRefresh : ''"></span>
+
+    <!-- Auto-refresh toggle -->
+    <button @click="toggleAutoRefresh()"
+      :class="autoRefresh ? 'bg-emerald-600 hover:bg-emerald-700' : 'bg-slate-700 hover:bg-slate-600'"
+      class="text-xs px-3 py-1.5 rounded-full font-medium transition-colors">
+      <span x-text="autoRefresh ? '● Live' : '○ Paused'"></span>
+    </button>
+
+    <!-- Run Now button -->
+    <button @click="runNow()"
+      :disabled="running"
+      class="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white text-xs font-semibold px-4 py-2 rounded-lg transition-colors shadow">
+      <svg x-show="!running" class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M5 3l14 9-14 9V3z"/></svg>
+      <svg x-show="running" x-cloak class="w-3.5 h-3.5 animate-spin" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>
+      <span x-text="running ? 'Processing…' : 'Run Now'"></span>
+    </button>
+  </div>
+</header>
+
+<!-- ═══════════════════════════ MAIN ═══════════════════════════ -->
+<main class="max-w-screen-2xl mx-auto px-6 py-6 space-y-6">
+
+  <!-- Run result toast -->
+  <div x-show="toast.show" x-cloak x-transition
+    :class="toast.ok ? 'bg-emerald-900/80 border-emerald-700' : 'bg-red-900/80 border-red-700'"
+    class="fixed top-20 right-6 z-50 border rounded-xl px-5 py-3 text-sm shadow-xl backdrop-blur max-w-sm">
+    <span x-text="toast.msg"></span>
+  </div>
+
+  <!-- ── Loading skeleton ── -->
+  <div x-show="loading" class="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
+    <template x-for="i in 4"><div class="h-28 rounded-2xl bg-slate-800 animate-pulse"></div></template>
+  </div>
+
+  <!-- ── STAT CARDS ── -->
+  <div x-show="!loading" x-cloak class="grid grid-cols-2 md:grid-cols-4 gap-4 fade-in">
+
+    <div class="stat-card rounded-2xl p-5 bg-gradient-to-br from-blue-600 to-blue-800 shadow-lg">
+      <p class="text-blue-200 text-xs font-medium uppercase tracking-wider">Total Processed</p>
+      <p class="text-4xl font-bold mt-2" x-text="stats.totalProcessed ?? '—'"></p>
+      <p class="text-blue-300 text-xs mt-1">emails handled by agent</p>
+    </div>
+
+    <div class="stat-card rounded-2xl p-5 bg-gradient-to-br from-emerald-600 to-emerald-800 shadow-lg">
+      <p class="text-emerald-200 text-xs font-medium uppercase tracking-wider">Auto-Replied</p>
+      <p class="text-4xl font-bold mt-2" x-text="stats.autoReplied ?? '—'"></p>
+      <p class="text-emerald-300 text-xs mt-1" x-text="(stats.autoRate ?? '0') + '% automation rate'"></p>
+    </div>
+
+    <div class="stat-card rounded-2xl p-5 bg-gradient-to-br from-amber-500 to-orange-600 shadow-lg">
+      <p class="text-amber-100 text-xs font-medium uppercase tracking-wider">Needs Review</p>
+      <p class="text-4xl font-bold mt-2" x-text="stats.humanReview ?? '—'"></p>
+      <p class="text-amber-200 text-xs mt-1">pending in queue</p>
+    </div>
+
+    <div class="stat-card rounded-2xl p-5 bg-gradient-to-br from-violet-600 to-purple-800 shadow-lg">
+      <p class="text-violet-200 text-xs font-medium uppercase tracking-wider">Avg Confidence</p>
+      <p class="text-4xl font-bold mt-2" x-text="(stats.avgConfidence ?? 0) + '%'"></p>
+      <p class="text-violet-300 text-xs mt-1" x-text="(stats.memoryCorrections ?? 0) + ' memory corrections'"></p>
+    </div>
+
+  </div>
+
+  <!-- ── CHARTS + QUICK METRICS ROW ── -->
+  <div x-show="!loading" x-cloak class="grid grid-cols-1 lg:grid-cols-3 gap-4 fade-in">
+
+    <!-- Category donut chart -->
+    <div class="lg:col-span-2 rounded-2xl bg-slate-900 border border-slate-800 p-5">
+      <h2 class="text-sm font-semibold text-slate-300 mb-4">Email Category Breakdown</h2>
+      <div class="flex items-center gap-6">
+        <div class="relative w-52 h-52 flex-shrink-0">
+          <canvas id="catChart"></canvas>
+          <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+            <span class="text-2xl font-bold" x-text="stats.totalProcessed ?? 0"></span>
+            <span class="text-xs text-slate-400">emails</span>
+          </div>
+        </div>
+        <!-- Legend -->
+        <div class="flex flex-col gap-2 flex-1 min-w-0">
+          <template x-for="(entry, idx) in chartLegend" :key="idx">
+            <div class="flex items-center gap-2">
+              <div class="w-3 h-3 rounded-sm flex-shrink-0" :style="`background:${entry.color}`"></div>
+              <span class="text-xs text-slate-300 truncate" x-text="entry.label"></span>
+              <span class="ml-auto text-xs font-semibold text-slate-400" x-text="entry.count"></span>
+            </div>
+          </template>
+          <div x-show="!chartLegend.length" class="text-xs text-slate-500 italic">No data yet</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Automation health meter -->
+    <div class="rounded-2xl bg-slate-900 border border-slate-800 p-5 flex flex-col gap-4">
+      <h2 class="text-sm font-semibold text-slate-300">Automation Health</h2>
+
+      <div>
+        <div class="flex justify-between text-xs text-slate-400 mb-1">
+          <span>Automation rate</span><span x-text="(stats.autoRate ?? 0) + '%'"></span>
+        </div>
+        <div class="h-2 rounded-full bg-slate-800">
+          <div class="h-2 rounded-full bg-emerald-500 bar-fill" :style="`width:${stats.autoRate ?? 0}%`"></div>
+        </div>
+      </div>
+
+      <div>
+        <div class="flex justify-between text-xs text-slate-400 mb-1">
+          <span>Avg confidence</span><span x-text="(stats.avgConfidence ?? 0) + '%'"></span>
+        </div>
+        <div class="h-2 rounded-full bg-slate-800">
+          <div class="h-2 rounded-full bar-fill"
+            :class="stats.avgConfidence >= 75 ? 'bg-blue-500' : stats.avgConfidence >= 50 ? 'bg-amber-400' : 'bg-red-500'"
+            :style="`width:${stats.avgConfidence ?? 0}%`"></div>
+        </div>
+      </div>
+
+      <div class="mt-auto grid grid-cols-2 gap-3 pt-2 border-t border-slate-800">
+        <div class="text-center">
+          <p class="text-2xl font-bold text-red-400" x-text="stats.errors ?? 0"></p>
+          <p class="text-xs text-slate-500 mt-0.5">Errors</p>
+        </div>
+        <div class="text-center">
+          <p class="text-2xl font-bold text-violet-400" x-text="stats.memoryCorrections ?? 0"></p>
+          <p class="text-xs text-slate-500 mt-0.5">Corrections</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── TABS ── -->
+  <div x-show="!loading" x-cloak class="fade-in">
+    <div class="flex gap-1 border-b border-slate-800 mb-4">
+      <template x-for="tab in tabs" :key="tab.id">
+        <button @click="activeTab = tab.id"
+          :class="activeTab === tab.id
+            ? 'border-b-2 border-blue-500 text-blue-400'
+            : 'text-slate-500 hover:text-slate-300'"
+          class="px-4 py-2.5 text-sm font-medium transition-colors -mb-px">
+          <span x-text="tab.label"></span>
+          <span x-show="tab.id === 'review' && stats.humanReview > 0"
+            class="ml-1.5 bg-amber-500 text-black text-xs font-bold px-1.5 py-0.5 rounded-full"
+            x-text="stats.humanReview"></span>
+        </button>
+      </template>
+    </div>
+
+    <!-- ── TAB: Audit Log ── -->
+    <div x-show="activeTab === 'audit'" class="fade-in">
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-800/60 text-xs text-slate-400 uppercase tracking-wider">
+              <tr>
+                <th class="px-4 py-3 text-left">Time</th>
+                <th class="px-4 py-3 text-left">Sender</th>
+                <th class="px-4 py-3 text-left">Subject</th>
+                <th class="px-4 py-3 text-left">Category</th>
+                <th class="px-4 py-3 text-left">Confidence</th>
+                <th class="px-4 py-3 text-left">Actions</th>
+                <th class="px-4 py-3 text-left">Status</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+              <template x-if="auditLog.length === 0">
+                <tr><td colspan="7" class="px-4 py-12 text-center text-slate-500 text-sm">No emails processed yet</td></tr>
+              </template>
+              <template x-for="(row, idx) in auditLog" :key="idx">
+                <tr class="hover:bg-slate-800/40 transition-colors">
+                  <td class="px-4 py-3 text-slate-400 text-xs whitespace-nowrap" x-text="fmtTime(row.timestamp)"></td>
+                  <td class="px-4 py-3 text-slate-300 max-w-[160px] truncate" :title="row.sender" x-text="row.sender"></td>
+                  <td class="px-4 py-3 text-slate-200 max-w-[200px] truncate" :title="row.subject" x-text="row.subject"></td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium"
+                      :class="catBadge(row.category)"
+                      x-text="row.category || '—'"></span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <div class="flex items-center gap-2">
+                      <div class="w-16 h-1.5 rounded-full bg-slate-800">
+                        <div class="h-1.5 rounded-full"
+                          :class="row.confidence >= 0.75 ? 'bg-emerald-500' : row.confidence >= 0.5 ? 'bg-amber-400' : 'bg-red-500'"
+                          :style="`width:${(row.confidence*100).toFixed(0)}%`"></div>
+                      </div>
+                      <span class="text-xs text-slate-400" x-text="(row.confidence*100).toFixed(0) + '%'"></span>
+                    </div>
+                  </td>
+                  <td class="px-4 py-3 text-xs text-slate-400 max-w-[180px] truncate" :title="row.actionsTaken" x-text="row.actionsTaken || '—'"></td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex px-2 py-0.5 rounded-full text-xs font-medium"
+                      :class="row.status === 'auto' ? 'bg-emerald-900/60 text-emerald-400' : row.status === 'human_review' ? 'bg-amber-900/60 text-amber-400' : row.status === 'error' ? 'bg-red-900/60 text-red-400' : 'bg-slate-800 text-slate-400'"
+                      x-text="row.status || '—'"></span>
+                  </td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <!-- ── TAB: Human Review Queue ── -->
+    <div x-show="activeTab === 'review'" class="fade-in space-y-3">
+      <template x-if="reviewQueue.length === 0">
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 py-16 text-center">
+          <div class="text-4xl mb-3">✅</div>
+          <p class="text-slate-400 text-sm">No emails pending review</p>
+        </div>
+      </template>
+      <template x-for="(item, idx) in reviewQueue" :key="idx">
+        <div class="rounded-2xl bg-slate-900 border border-slate-800 p-5 space-y-3 hover:border-slate-700 transition-colors">
+          <div class="flex items-start justify-between gap-4">
+            <div class="min-w-0">
+              <p class="font-semibold text-slate-100 truncate" x-text="item.subject"></p>
+              <p class="text-xs text-slate-400 mt-0.5" x-text="item.sender + ' · ' + fmtTime(item.timestamp)"></p>
+            </div>
+            <div class="flex items-center gap-2 flex-shrink-0">
+              <span class="text-xs text-slate-500">Agent said:</span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-medium"
+                :class="catBadge(item.agentCategory)"
+                x-text="item.agentCategory"></span>
+              <span class="text-xs px-2 py-0.5 rounded-full bg-amber-900/50 text-amber-400"
+                x-text="(item.confidence*100).toFixed(0) + '% conf'"></span>
+            </div>
+          </div>
+          <div class="bg-slate-800/60 rounded-lg px-4 py-3 text-xs text-slate-400">
+            <span class="font-medium text-amber-400">Escalation reason: </span>
+            <span x-text="item.escalationReason"></span>
+          </div>
+          <details class="group">
+            <summary class="text-xs text-blue-400 cursor-pointer select-none hover:text-blue-300">View draft reply ↓</summary>
+            <div class="mt-2 bg-slate-800 rounded-lg p-3 text-xs text-slate-300 whitespace-pre-wrap leading-relaxed" x-text="item.draftReply"></div>
+          </details>
+          <div class="pt-2 border-t border-slate-800 flex items-center gap-2 text-xs text-slate-500">
+            <span>To correct: open the</span>
+            <span class="font-mono bg-slate-800 px-1.5 py-0.5 rounded text-slate-300">HumanReview</span>
+            <span>sheet → fill column J (HumanOverrideCategory)</span>
+          </div>
+        </div>
+      </template>
+    </div>
+
+    <!-- ── TAB: Memory ── -->
+    <div x-show="activeTab === 'memory'" class="fade-in">
+      <div class="rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden">
+        <div class="px-5 py-4 border-b border-slate-800 flex items-center justify-between">
+          <div>
+            <h3 class="text-sm font-semibold text-slate-200">Correction Memory</h3>
+            <p class="text-xs text-slate-500 mt-0.5">Each row below is injected as a few-shot example into future Gemini prompts.</p>
+          </div>
+          <span class="text-xs bg-violet-900/50 text-violet-400 px-3 py-1 rounded-full font-medium"
+            x-text="memoryEntries.length + ' corrections'"></span>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-sm">
+            <thead class="bg-slate-800/60 text-xs text-slate-400 uppercase tracking-wider">
+              <tr>
+                <th class="px-4 py-3 text-left">Time</th>
+                <th class="px-4 py-3 text-left">Subject</th>
+                <th class="px-4 py-3 text-left">Agent Said</th>
+                <th class="px-4 py-3 text-left">Correct Category</th>
+                <th class="px-4 py-3 text-left">Corrected By</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-slate-800">
+              <template x-if="memoryEntries.length === 0">
+                <tr><td colspan="5" class="px-4 py-12 text-center text-slate-500 text-sm">No corrections yet — the agent gets smarter as humans review its work</td></tr>
+              </template>
+              <template x-for="(m, idx) in memoryEntries" :key="idx">
+                <tr class="hover:bg-slate-800/40 transition-colors">
+                  <td class="px-4 py-3 text-xs text-slate-400 whitespace-nowrap" x-text="fmtTime(m.timestamp)"></td>
+                  <td class="px-4 py-3 text-slate-200 max-w-[220px] truncate" :title="m.subject" x-text="m.subject"></td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium line-through opacity-60"
+                      :class="catBadge(m.originalCategory)"
+                      x-text="m.originalCategory"></span>
+                  </td>
+                  <td class="px-4 py-3">
+                    <span class="inline-flex px-2 py-0.5 rounded-md text-xs font-medium ring-1 ring-emerald-500"
+                      :class="catBadge(m.correctedCategory)"
+                      x-text="m.correctedCategory"></span>
+                  </td>
+                  <td class="px-4 py-3 text-xs text-slate-400" x-text="m.addedBy"></td>
+                </tr>
+              </template>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </div><!-- /tabs -->
+</main>
+
+<!-- ═══════════════════════════ ALPINE APP ═══════════════════════════ -->
+<script>
+const CAT_COLORS = {
+  sponsorship:          { bg: 'bg-sky-900/60',     text: 'text-sky-400',     hex: '#38bdf8' },
+  event_registration:   { bg: 'bg-emerald-900/60', text: 'text-emerald-400', hex: '#34d399' },
+  speaker_application:  { bg: 'bg-violet-900/60',  text: 'text-violet-400',  hex: '#a78bfa' },
+  volunteer_application:{ bg: 'bg-pink-900/60',    text: 'text-pink-400',    hex: '#f472b6' },
+  complaint:            { bg: 'bg-red-900/60',      text: 'text-red-400',     hex: '#f87171' },
+  partnership:          { bg: 'bg-indigo-900/60',   text: 'text-indigo-400',  hex: '#818cf8' },
+  feedback:             { bg: 'bg-teal-900/60',     text: 'text-teal-400',    hex: '#2dd4bf' },
+  general_support:      { bg: 'bg-slate-700/60',    text: 'text-slate-300',   hex: '#94a3b8' },
+  ERROR:                { bg: 'bg-red-900/80',      text: 'text-red-300',     hex: '#ef4444' },
+};
+
+function app() {
+  return {
+    // State
+    loading:       true,
+    running:       false,
+    autoRefresh:   true,
+    activeTab:     'audit',
+    lastRefresh:   '',
+    stats:         {},
+    auditLog:      [],
+    reviewQueue:   [],
+    memoryEntries: [],
+    chartLegend:   [],
+    chart:         null,
+    refreshTimer:  null,
+    toast:         { show: false, ok: true, msg: '' },
+
+    tabs: [
+      { id: 'audit',  label: 'Audit Log' },
+      { id: 'review', label: 'Human Review' },
+      { id: 'memory', label: 'Memory' },
+    ],
+
+    // Init
+    async init() {
+      await this.loadAll();
+      this.loading = false;
+      this.$nextTick(() => this.buildChart());
+      this.startAutoRefresh();
+    },
+
+    // ── Data loading ──────────────────────────────────────────────────────
+    async loadAll() {
+      await Promise.all([
+        this.loadStats(),
+        this.loadAuditLog(),
+        this.loadReviewQueue(),
+        this.loadMemory(),
+      ]);
+      this.lastRefresh = new Date().toLocaleTimeString();
+    },
+
+    loadStats() {
+      return new Promise(resolve => {
+        google.script.run
+          .withSuccessHandler(data => { this.stats = data; resolve(); })
+          .withFailureHandler(e   => { console.error('stats:', e); resolve(); })
+          .getDashboardStats();
+      });
+    },
+
+    loadAuditLog() {
+      return new Promise(resolve => {
+        google.script.run
+          .withSuccessHandler(data => { this.auditLog = data; resolve(); })
+          .withFailureHandler(e   => { console.error('audit:', e); resolve(); })
+          .getRecentAuditLog(30);
+      });
+    },
+
+    loadReviewQueue() {
+      return new Promise(resolve => {
+        google.script.run
+          .withSuccessHandler(data => { this.reviewQueue = data; resolve(); })
+          .withFailureHandler(e   => { console.error('review:', e); resolve(); })
+          .getHumanReviewQueue();
+      });
+    },
+
+    loadMemory() {
+      return new Promise(resolve => {
+        google.script.run
+          .withSuccessHandler(data => { this.memoryEntries = data; resolve(); })
+          .withFailureHandler(e   => { console.error('memory:', e); resolve(); })
+          .getMemoryEntries(25);
+      });
+    },
+
+    // ── Chart ─────────────────────────────────────────────────────────────
+    buildChart() {
+      const dist = this.stats.categoryDistribution || {};
+      const labels = Object.keys(dist);
+      const values = Object.values(dist);
+      const colors = labels.map(l => (CAT_COLORS[l] || CAT_COLORS.general_support).hex);
+
+      this.chartLegend = labels.map((l, i) => ({
+        label: l.replace(/_/g, ' '),
+        count: values[i],
+        color: colors[i],
+      }));
+
+      const ctx = document.getElementById('catChart');
+      if (!ctx) return;
+
+      if (this.chart) this.chart.destroy();
+
+      this.chart = new Chart(ctx, {
+        type: 'doughnut',
+        data: { labels, datasets: [{ data: values, backgroundColor: colors, borderWidth: 2, borderColor: '#0f172a', hoverOffset: 6 }] },
+        options: {
+          cutout: '72%',
+          plugins: { legend: { display: false }, tooltip: {
+            callbacks: {
+              label: ctx => ` ${ctx.label.replace(/_/g,' ')}: ${ctx.parsed}`
+            }
+          }},
+          animation: { duration: 800, easing: 'easeInOutQuart' },
+        },
+      });
+    },
+
+    // ── Actions ───────────────────────────────────────────────────────────
+    async runNow() {
+      this.running = true;
+      google.script.run
+        .withSuccessHandler(async res => {
+          this.running = false;
+          this.showToast(res.success, res.success ? 'Run complete! Data refreshed.' : 'Run failed: ' + res.message);
+          if (res.success) await this.loadAll();
+          this.$nextTick(() => this.buildChart());
+        })
+        .withFailureHandler(e => {
+          this.running = false;
+          this.showToast(false, 'Error: ' + e.message);
+        })
+        .triggerManualRun();
+    },
+
+    startAutoRefresh() {
+      this.refreshTimer = setInterval(async () => {
+        if (!this.autoRefresh || this.running) return;
+        await this.loadAll();
+        this.buildChart();
+      }, 30000); // refresh every 30 s
+    },
+
+    toggleAutoRefresh() {
+      this.autoRefresh = !this.autoRefresh;
+    },
+
+    showToast(ok, msg) {
+      this.toast = { show: true, ok, msg };
+      setTimeout(() => { this.toast.show = false; }, 4000);
+    },
+
+    // ── Formatting helpers ────────────────────────────────────────────────
+    fmtTime(iso) {
+      if (!iso) return '—';
+      const d = new Date(iso);
+      return isNaN(d) ? iso : d.toLocaleString(undefined, { month:'short', day:'numeric', hour:'2-digit', minute:'2-digit' });
+    },
+
+    catBadge(cat) {
+      const c = CAT_COLORS[cat] || CAT_COLORS.general_support;
+      return `${c.bg} ${c.text}`;
+    },
+  };
+}
+</script>
+</body>
+</html>

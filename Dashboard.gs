@@ -1,0 +1,136 @@
+// Dashboard.gs — Serves the web-app dashboard and exposes server-side
+// data functions called via google.script.run from the frontend.
+
+// ---------------------------------------------------------------------------
+// Web-app entry point
+// ---------------------------------------------------------------------------
+
+function doGet() {
+  return HtmlService.createHtmlOutputFromFile('dashboard')
+    .setTitle('OpsAgent Dashboard')
+    .setXFrameOptionsMode(HtmlService.XFrameOptionsMode.ALLOWALL);
+}
+
+// ---------------------------------------------------------------------------
+// Data functions (called from frontend via google.script.run)
+// ---------------------------------------------------------------------------
+
+/** Returns all stats needed for the top-bar cards and charts. */
+function getDashboardStats() {
+  const ss          = SpreadsheetApp.getActiveSpreadsheet();
+  const auditSheet  = ss.getSheetByName(SHEET_NAMES.AUDIT_LOG);
+  const reviewSheet = ss.getSheetByName(SHEET_NAMES.HUMAN_REVIEW);
+  const memSheet    = ss.getSheetByName(SHEET_NAMES.MEMORY);
+
+  const auditRows  = _sheetRows(auditSheet,  13);
+  const reviewRows = _sheetRows(reviewSheet, 14);
+
+  const valid      = auditRows.filter(r => r[5] && r[5] !== 'ERROR');
+  const autoRows   = valid.filter(r => r[8] === 'auto');
+  const pendingHR  = reviewRows.filter(r => r[12] === 'Pending');
+  const errorRows  = auditRows.filter(r => r[5] === 'ERROR');
+
+  const confidences = valid.map(r => parseFloat(r[6])).filter(c => !isNaN(c) && c > 0);
+  const avgConf     = confidences.length
+    ? (confidences.reduce((a, b) => a + b, 0) / confidences.length * 100).toFixed(1)
+    : 0;
+
+  const catCount = {};
+  valid.forEach(r => {
+    const cat = r[5];
+    catCount[cat] = (catCount[cat] || 0) + 1;
+  });
+
+  const memCount = memSheet && memSheet.getLastRow() > 1 ? memSheet.getLastRow() - 1 : 0;
+
+  return {
+    totalProcessed:   valid.length,
+    autoReplied:      autoRows.length,
+    humanReview:      pendingHR.length,
+    errors:           errorRows.length,
+    memoryCorrections:memCount,
+    avgConfidence:    Number(avgConf),
+    autoRate:         valid.length ? ((autoRows.length / valid.length) * 100).toFixed(1) : '0',
+    categoryDistribution: catCount,
+    orgName:          getConfigValue('ORG_NAME', 'My Organization'),
+  };
+}
+
+/** Returns the N most recent audit log entries (newest first). */
+function getRecentAuditLog(limit) {
+  if (!limit) limit = 25;
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAMES.AUDIT_LOG);
+  const rows  = _sheetRows(sheet, 13);
+  if (!rows.length) return [];
+
+  return rows.slice(-limit).reverse().map(r => ({
+    timestamp:    r[0] ? new Date(r[0]).toISOString() : '',
+    sender:       r[3],
+    subject:      r[4],
+    category:     r[5],
+    confidence:   parseFloat(r[6]) || 0,
+    actionsTaken: r[7],
+    status:       r[8],
+    sensitiveFlag:r[10],
+    error:        r[12],
+  }));
+}
+
+/** Returns all pending Human Review items. */
+function getHumanReviewQueue() {
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAMES.HUMAN_REVIEW);
+  const rows  = _sheetRows(sheet, 14);
+  if (!rows.length) return [];
+
+  return rows
+    .map((r, i) => ({ _row: i + 2, data: r }))
+    .filter(({ data: r }) => r[12] === 'Pending')
+    .map(({ data: r }) => ({
+      timestamp:       r[0] ? new Date(r[0]).toISOString() : '',
+      sender:          r[3],
+      subject:         r[4],
+      agentCategory:   r[5],
+      confidence:      parseFloat(r[6]) || 0,
+      draftReply:      r[7],
+      escalationReason:r[8],
+    }));
+}
+
+/** Manually triggers a processing run — called by the "Run Now" button. */
+function triggerManualRun() {
+  try {
+    processEmails();
+    return { success: true, message: 'Processing run completed.' };
+  } catch (e) {
+    return { success: false, message: e.message };
+  }
+}
+
+/** Returns recent Memory corrections for the dashboard Memory tab. */
+function getMemoryEntries(limit) {
+  if (!limit) limit = 20;
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAMES.MEMORY);
+  const rows  = _sheetRows(sheet, 8);
+  if (!rows.length) return [];
+
+  return rows.slice(-limit).reverse().map(r => ({
+    timestamp:         r[0] ? new Date(r[0]).toISOString() : '',
+    subject:           r[2],
+    originalCategory:  r[4],
+    correctedCategory: r[5],
+    addedBy:           r[6],
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Shared helper
+// ---------------------------------------------------------------------------
+
+function _sheetRows(sheet, numCols) {
+  if (!sheet || sheet.getLastRow() <= 1) return [];
+  const n = sheet.getLastRow() - 1;
+  return sheet.getRange(2, 1, n, numCols).getValues();
+}

@@ -72,3 +72,22 @@ function getGeminiApiKey() {
   }
   return key;
 }
+
+/**
+ * Returns the OpenAI API key from Script Properties.
+ */
+function getOpenAIApiKey() {
+  const key = PropertiesService.getScriptProperties().getProperty('OPENAI_API_KEY');
+  if (!key) {
+    throw new Error(
+      'OPENAI_API_KEY not set.\n' +
+      'Go to Extensions → Apps Script → Project Settings → Script Properties and add it.'
+    );
+  }
+  return key;
+}
+
+/** Returns the current AI provider — 'gemini' or 'openai'. */
+function getAIProvider() {
+  return getConfigValue('AI_PROVIDER', 'gemini').toLowerCase();
+}

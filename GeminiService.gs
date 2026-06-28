@@ -1,8 +1,9 @@
-// GeminiService.gs — All interactions with the Gemini API.
+// GeminiService.gs — All interactions with AI APIs (Gemini + OpenAI).
 // Handles classification, field extraction, confidence scoring, reply drafting,
 // and few-shot injection from the Memory sheet.
 
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta/models';
+const OPENAI_API_BASE = 'https://api.openai.com/v1/chat/completions';
 
 const CATEGORIES = [
   'sponsorship',
@@ -30,45 +31,22 @@ const CATEGORIES = [
  *                                    extracted_fields, draft_reply, sensitive_flags }
  */
 function classifyAndExtract(emailData, memoryExamples, templates) {
-  const model  = getConfigValue('GEMINI_MODEL', 'gemini-1.5-flash');
-  const apiKey = getGeminiApiKey();
-  const orgName = getConfigValue('ORG_NAME', 'Our Organization');
+  const provider = getAIProvider();
+  const orgName  = getConfigValue('ORG_NAME', 'Our Organization');
+  const prompt   = _buildPrompt(emailData, memoryExamples, templates, orgName);
 
-  const prompt      = _buildPrompt(emailData, memoryExamples, templates, orgName);
-  const requestBody = _buildRequestBody(prompt);
-  const url         = `${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`;
-
-  const response = UrlFetchApp.fetch(url, {
-    method:          'post',
-    contentType:     'application/json',
-    payload:         JSON.stringify(requestBody),
-    muteHttpExceptions: true,
-  });
-
-  const code = response.getResponseCode();
-  const text = response.getContentText();
-
-  if (code !== 200) {
-    throw new Error(`Gemini API ${code}: ${text.substring(0, 400)}`);
+  let raw;
+  if (provider === 'openai') {
+    raw = _callOpenAI(prompt);
+  } else {
+    raw = _callGemini(prompt);
   }
-
-  const json = JSON.parse(text);
-
-  if (!json.candidates || json.candidates.length === 0) {
-    // Surface the block reason if present
-    const reason = json.promptFeedback && json.promptFeedback.blockReason
-      ? json.promptFeedback.blockReason
-      : 'unknown';
-    throw new Error(`Gemini returned no candidates. Block reason: ${reason}`);
-  }
-
-  const raw = json.candidates[0].content.parts[0].text;
 
   let result;
   try {
     result = JSON.parse(raw);
   } catch (e) {
-    throw new Error(`Gemini response was not valid JSON:\n${raw.substring(0, 500)}`);
+    throw new Error(`AI response was not valid JSON:\n${raw.substring(0, 500)}`);
   }
 
   // Defensive normalisation
@@ -80,6 +58,72 @@ function classifyAndExtract(emailData, memoryExamples, templates) {
   result.reasoning        = result.reasoning   || '';
 
   return result;
+}
+
+// ---------------------------------------------------------------------------
+// Provider: Gemini
+// ---------------------------------------------------------------------------
+
+function _callGemini(prompt) {
+  const model  = getConfigValue('GEMINI_MODEL', 'gemini-2.0-flash');
+  const apiKey = getGeminiApiKey();
+  const url    = `${GEMINI_API_BASE}/${model}:generateContent?key=${apiKey}`;
+
+  const response = UrlFetchApp.fetch(url, {
+    method:             'post',
+    contentType:        'application/json',
+    payload:            JSON.stringify(_buildGeminiBody(prompt)),
+    muteHttpExceptions: true,
+  });
+
+  const code = response.getResponseCode();
+  const text = response.getContentText();
+  if (code !== 200) throw new Error(`Gemini API ${code}: ${text.substring(0, 400)}`);
+
+  const json = JSON.parse(text);
+  if (!json.candidates || json.candidates.length === 0) {
+    const reason = (json.promptFeedback && json.promptFeedback.blockReason) || 'unknown';
+    throw new Error(`Gemini returned no candidates. Block reason: ${reason}`);
+  }
+  return json.candidates[0].content.parts[0].text;
+}
+
+// ---------------------------------------------------------------------------
+// Provider: OpenAI
+// ---------------------------------------------------------------------------
+
+function _callOpenAI(prompt) {
+  const model  = getConfigValue('OPENAI_MODEL', 'gpt-4o-mini');
+  const apiKey = getOpenAIApiKey();
+
+  const body = {
+    model: model,
+    messages: [
+      { role: 'system', content: 'You are a JSON-only email classification agent. Respond with ONLY valid JSON — no markdown fences, no extra text.' },
+      { role: 'user',   content: prompt },
+    ],
+    temperature: 0.15,
+    max_tokens:  2048,
+    response_format: { type: 'json_object' },
+  };
+
+  const response = UrlFetchApp.fetch(OPENAI_API_BASE, {
+    method:             'post',
+    contentType:        'application/json',
+    headers:            { 'Authorization': 'Bearer ' + apiKey },
+    payload:            JSON.stringify(body),
+    muteHttpExceptions: true,
+  });
+
+  const code = response.getResponseCode();
+  const text = response.getContentText();
+  if (code !== 200) throw new Error(`OpenAI API ${code}: ${text.substring(0, 400)}`);
+
+  const json = JSON.parse(text);
+  if (!json.choices || json.choices.length === 0) {
+    throw new Error('OpenAI returned no choices');
+  }
+  return json.choices[0].message.content;
 }
 
 // ---------------------------------------------------------------------------
@@ -223,7 +267,7 @@ function _buildFewShotBlock(examples) {
 // Request body builder
 // ---------------------------------------------------------------------------
 
-function _buildRequestBody(prompt) {
+function _buildGeminiBody(prompt) {
   return {
     contents: [{ parts: [{ text: prompt }] }],
     generationConfig: {

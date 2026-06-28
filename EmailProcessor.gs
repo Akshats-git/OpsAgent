@@ -74,6 +74,7 @@ function processEmails() {
       };
 
       _processOneEmail(emailData, memoryExamples, templates);
+      _clearRetryCount(emailData.messageId);   // success → reset any retry counter
       processed++;
 
       // Brief pause between Gemini calls to stay within quota
@@ -82,7 +83,7 @@ function processEmails() {
     } catch (e) {
       Logger.log(`Error on thread ${thread.getId()}: ${e.message}`);
       errors++;
-      _logProcessingError(thread, e);
+      _handleProcessingError(thread, e);
     }
   }
 
@@ -125,38 +126,129 @@ function _processOneEmail(emailData, memoryExamples, templates) {
 // Error handling
 // ---------------------------------------------------------------------------
 
-function _logProcessingError(thread, error) {
-  try {
-    const ss    = SpreadsheetApp.getActiveSpreadsheet();
-    const sheet = ss.getSheetByName(SHEET_NAMES.AUDIT_LOG);
-    const msg   = thread.getMessages()[thread.getMessages().length - 1];
+const MAX_RETRIES = 3;
+const QUARANTINE_LABEL = 'OpsAgent/Quarantine';
 
+/**
+ * Decides what to do with a failed email based on the failure type:
+ *  - Transient (rate limit, timeout, 5xx): leave UNLABELED so the next run
+ *    retries it. After MAX_RETRIES attempts, quarantine it.
+ *  - Permanent (bad JSON, 400/401/404 config errors): quarantine immediately —
+ *    retrying won't help and we mustn't block the batch forever.
+ */
+function _handleProcessingError(thread, error) {
+  const msg     = thread.getMessages()[thread.getMessages().length - 1];
+  const emailId = msg.getId();
+  const transient = _isTransientError(error);
+
+  if (transient) {
+    const attempts = _incrementRetryCount(emailId);
+    if (attempts < MAX_RETRIES) {
+      // Leave the thread unlabeled — it stays in the queue and retries next run.
+      Logger.log(`  Transient error (attempt ${attempts}/${MAX_RETRIES}) — will retry next run.`);
+      _logErrorRow(thread, msg, error, `transient_retry_${attempts}`);
+      return;
+    }
+    Logger.log(`  Transient error exhausted ${MAX_RETRIES} retries — quarantining.`);
+    _logErrorRow(thread, msg, error, 'quarantined_after_retries');
+  } else {
+    Logger.log('  Permanent error — quarantining immediately.');
+    _logErrorRow(thread, msg, error, 'quarantined_permanent');
+  }
+
+  // Quarantine: mark processed (so it leaves the active queue) + tag for the
+  // operator to find and re-process manually once the root cause is fixed.
+  _clearRetryCount(emailId);
+  _applyLabelSilently(thread);
+  _quarantineThread(thread);
+}
+
+/** Heuristic: is this error worth retrying? */
+function _isTransientError(error) {
+  const m = String(error && error.message || error).toLowerCase();
+  return (
+    m.indexOf(' 429') !== -1 || m.indexOf(' 500') !== -1 || m.indexOf(' 502') !== -1 ||
+    m.indexOf(' 503') !== -1 || m.indexOf(' 504') !== -1 ||
+    m.indexOf('rate limit') !== -1 || m.indexOf('quota') !== -1 ||
+    m.indexOf('timeout') !== -1   || m.indexOf('timed out') !== -1 ||
+    m.indexOf('unavailable') !== -1 || m.indexOf('overloaded') !== -1 ||
+    m.indexOf('address unavailable') !== -1 || m.indexOf('dns') !== -1
+  );
+}
+
+function _logErrorRow(thread, msg, error, statusTag) {
+  try {
+    const sheet = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_NAMES.AUDIT_LOG);
     sheet.appendRow([
-      new Date(),
-      msg.getId(),
-      thread.getId(),
-      msg.getFrom(),
-      msg.getSubject() || '(No Subject)',
-      'ERROR',
-      0,
-      'none',
-      'error',
-      '',
-      '',
-      '',
-      error.message,
+      new Date(), msg.getId(), thread.getId(), msg.getFrom(),
+      msg.getSubject() || '(No Subject)', 'ERROR', 0, 'none', statusTag,
+      '', '', '', String(error && error.message || error),
     ]);
   } catch (logErr) {
     Logger.log('Could not log error to AuditLog: ' + logErr.message);
   }
-
-  // Always label the thread to prevent infinite retry on the same broken email
-  _applyLabelSilently(thread);
 }
+
+// ── Retry counter (per message ID, stored in Script Properties) ─────────────
+
+function _retryKey(emailId) { return 'retry_' + emailId; }
+
+function _incrementRetryCount(emailId) {
+  const props = PropertiesService.getScriptProperties();
+  const n = parseInt(props.getProperty(_retryKey(emailId)) || '0', 10) + 1;
+  props.setProperty(_retryKey(emailId), String(n));
+  return n;
+}
+
+function _clearRetryCount(emailId) {
+  PropertiesService.getScriptProperties().deleteProperty(_retryKey(emailId));
+}
+
+// ── Labels ──────────────────────────────────────────────────────────────────
 
 function _applyLabelSilently(thread) {
   try {
     const label = GmailApp.getUserLabelByName(GMAIL_LABEL);
     if (label) label.addToThread(thread);
   } catch (e) { /* silent — label missing is non-critical */ }
+}
+
+function _quarantineThread(thread) {
+  try {
+    const label = GmailApp.getUserLabelByName(QUARANTINE_LABEL) || GmailApp.createLabel(QUARANTINE_LABEL);
+    label.addToThread(thread);
+  } catch (e) { /* silent */ }
+}
+
+// ---------------------------------------------------------------------------
+// Dev / demo helpers — run these manually from the editor
+// ---------------------------------------------------------------------------
+
+/**
+ * Removes the OpsAgent/Processed and Quarantine labels from ALL threads and
+ * clears every retry counter, so the agent will re-scan the whole inbox.
+ * Handy when a test email got labeled during an earlier failed run and now
+ * "Run Now does nothing". Does NOT delete any sheet data.
+ */
+function devResetProcessedLabels() {
+  let cleared = 0;
+  [GMAIL_LABEL, QUARANTINE_LABEL].forEach(name => {
+    const label = GmailApp.getUserLabelByName(name);
+    if (!label) return;
+    let threads, start = 0;
+    do {
+      threads = label.getThreads(start, 100);
+      threads.forEach(t => { label.removeFromThread(t); cleared++; });
+      start += 100;
+    } while (threads.length === 100);
+  });
+
+  // Wipe retry counters
+  const props = PropertiesService.getScriptProperties();
+  Object.keys(props.getProperties())
+        .filter(k => k.indexOf('retry_') === 0)
+        .forEach(k => props.deleteProperty(k));
+
+  Logger.log(`devResetProcessedLabels: cleared labels from ${cleared} thread(s) and reset retry counters.`);
+  return cleared;
 }

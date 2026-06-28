@@ -94,4 +94,47 @@ If all four pass, the email gets automated. `getRequiredActions()` then resolves
 
 ---
 
+## Session 2 — Deployment Reality Check + Phase A (Closing the Loops)
+
+**Date:** 2026-06-11 (later)
+
+### The deployment shakedown
+
+Got the system into a live Apps Script project bound to a Sheet and immediately hit the usual real-world papercuts. Logging them here because anyone redeploying will hit the same ones:
+
+- **`myFunction was deleted`** — the default `Code.gs` stub Apps Script auto-creates was set as the active function. Deleted it; run `setup` from the dropdown instead.
+- **`Cannot read properties of null (reading 'getSheetByName')`** — I'd created a *standalone* script first. `SpreadsheetApp.getActiveSpreadsheet()` returns null there. Fix: create the script from *inside* a Sheet (Extensions → Apps Script) so it's container-bound.
+- **`Gemini API 404: models/gemini-1.5-flash is not found`** — the model needs a version suffix or a current name. Switched the default to `gemini-2.0-flash`.
+- **OpenAI escape hatch** — for local testing the user wanted to use an OpenAI key instead of Gemini. Added an `AI_PROVIDER` switch in the Config sheet (`gemini` | `openai`) and a parallel `_callOpenAI()` path using the chat-completions endpoint with `response_format: json_object`. Same prompt, same normalised output shape — the rest of the pipeline doesn't know or care which provider answered.
+
+### The hard look in the mirror
+
+After the first deploy we went back to the original problem statement and graded ourselves honestly against the six evaluation criteria. Three real holes surfaced, and one of them was embarrassing:
+
+**Hole 1 — the human review loop went nowhere.** This was the big one. A low-confidence or complaint email got flagged, its draft stored in the HumanReview sheet, a Chat alert fired... and then *nothing*. A human could correct the category (and Memory would update), but the customer never actually got a reply. We'd built the "raise your hand" half of human-in-the-loop and completely forgotten the "lower your hand and act" half. For a criterion literally named *Human-AI Collaboration*, that's a hole a judge finds in one question: "so what happens after the human reviews it?"
+
+**Hole 2 — transient failures ate emails.** The old `_logProcessingError` slapped the `Processed` label on a thread for *any* exception. So a Gemini rate-limit (429) or a momentary timeout would permanently bury an email that would've succeeded thirty seconds later. A reliability bug hiding inside the error handler.
+
+**Hole 3 — the reports we promised didn't exist.** (Deferred to Phase B, but noted.)
+
+### What Phase A actually changed
+
+**A1 — Closed the human loop.** New file `ReviewActions.gs` with `approveAndSend(emailId, editedDraft, finalCategory)`: it finds the HumanReview row, sends the (possibly edited) reply to the original thread, stamps the row as `Approved & Sent` with reviewer + timestamp, and — if the reviewer changed the category — records the correction to Memory. There's also `dismissReview()` for spam/duplicates. I deliberately wrote these as clean standalone server functions, *then* wired the dashboard button on top. The user preferred a dashboard button (fair — deploying is genuinely one click), but `google.script.run` calls can silently no-op, which is exactly the "Run Now does nothing" symptom we were already fighting. Keeping the logic standalone means it's also callable straight from the editor as a demo-day fallback.
+
+To avoid two code paths writing Memory differently, I pulled the Memory-append logic out of the onEdit trigger into a shared `recordMemoryCorrection()` that both the sheet-edit path and the dashboard-approve path call. Single source of truth.
+
+The dashboard's Human Review tab is now interactive: an editable draft textarea, a category dropdown (defaulting to what the agent guessed), and **Approve & Send** / **Dismiss** buttons with per-item busy state. I also taught the 30-second auto-refresh to *not* clobber a card while the reviewer is mid-edit on it — small thing, but losing a half-written reply to a background refresh would be infuriating.
+
+**A2 — Made failures recoverable.** Rewrote the error handler to classify failures. `_isTransientError()` sniffs the message for 429/5xx/rate-limit/quota/timeout/overloaded signatures. Transient errors leave the thread *unlabeled* so the next 5-minute run retries it, backed by a per-message retry counter in Script Properties. After `MAX_RETRIES` (3) it gives up and quarantines. Permanent errors (bad JSON, 400/401/404 config problems) quarantine immediately — no point hammering a misconfigured key 3 times per email. Quarantined threads get an `OpsAgent/Quarantine` label so the operator can find them, fix the root cause, and re-process. On success we clear the retry counter so a flaky email that eventually works doesn't carry stale state.
+
+**A3 — A reset button for demos and stuck inboxes.** Added `devResetProcessedLabels()`: strips the Processed and Quarantine labels off every thread and wipes all retry counters, so the agent re-scans the whole inbox from scratch. This directly fixes the "I sent a test email and Run Now does nothing" situation — which is almost always because the email got labeled during an earlier failed run and is now invisible to the `-label:OpsAgent/Processed` query. Doesn't touch any sheet data, so it's safe to run anytime.
+
+### Where we stand now
+
+The end-to-end story is finally *complete* rather than just *plausible*: an uncertain email gets flagged → a human opens the dashboard, tweaks the draft and category, hits Approve & Send → the reply goes out AND the correction trains the agent. And the pipeline no longer quietly loses mail when an API has a bad minute.
+
+Next up (Phase B), pending the user's call: Google Docs weekly digests in a Drive folder, a "request more info" action for incomplete emails, and surfacing the agent's reasoning for transparency.
+
+---
+
 *More entries to follow as the system is deployed and iterated.*

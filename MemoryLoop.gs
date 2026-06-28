@@ -72,6 +72,17 @@ function onEditTrigger(e) {
   }
 
   // ── Write correction to Memory sheet ─────────────────────────────────────
+  recordMemoryCorrection(emailId, subject, agentCategory, override, reviewer);
+}
+
+/**
+ * Appends a single correction to the Memory sheet so it becomes a future
+ * few-shot example. Shared by the onEdit trigger and the dashboard approve flow.
+ * No-op if the original and corrected categories are the same.
+ */
+function recordMemoryCorrection(emailId, subject, originalCategory, correctedCategory, reviewer) {
+  if (originalCategory === correctedCategory) return;
+
   let emailSnippet = '';
   try {
     const message = GmailApp.getMessageById(emailId);
@@ -85,20 +96,20 @@ function onEditTrigger(e) {
   const memorySheet = ss.getSheetByName(SHEET_NAMES.MEMORY);
 
   memorySheet.appendRow([
-    now,
+    new Date(),
     emailId,
     subject,
     emailSnippet,
-    agentCategory,  // OriginalCategory (what Gemini said)
-    override,       // CorrectedCategory (what the human said)
+    originalCategory,   // OriginalCategory (what the AI said)
+    correctedCategory,  // CorrectedCategory (what the human said)
     reviewer,
-    '',             // Notes — reviewer can fill optionally
+    '',                 // Notes — reviewer can fill optionally
   ]);
 
-  // Bust the config cache so the next run picks up fresh memory count
+  // Bust the config cache so the next run picks up the fresh memory count
   clearConfigCache();
 
   Logger.log(
-    `Memory updated: "${subject}" corrected from [${agentCategory}] → [${override}] by ${reviewer}`
+    `Memory updated: "${subject}" corrected from [${originalCategory}] → [${correctedCategory}] by ${reviewer}`
   );
 }

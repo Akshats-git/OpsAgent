@@ -88,6 +88,7 @@ function getHumanReviewQueue() {
     .map((r, i) => ({ _row: i + 2, data: r }))
     .filter(({ data: r }) => r[12] === 'Pending')
     .map(({ data: r }) => ({
+      emailId:         String(r[1]),
       timestamp:       r[0] ? new Date(r[0]).toISOString() : '',
       sender:          r[3],
       subject:         r[4],

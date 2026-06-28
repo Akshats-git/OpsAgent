@@ -61,7 +61,7 @@ function getRecentAuditLog(limit) {
   if (!limit) limit = 25;
   const ss    = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAMES.AUDIT_LOG);
-  const rows  = _sheetRows(sheet, 13);
+  const rows  = _sheetRows(sheet, 14);
   if (!rows.length) return [];
 
   return rows.slice(-limit).reverse().map(r => ({
@@ -74,6 +74,7 @@ function getRecentAuditLog(limit) {
     status:       r[8],
     sensitiveFlag:r[10],
     error:        r[12],
+    reasoning:    r[13] || '',
   }));
 }
 
@@ -81,7 +82,7 @@ function getRecentAuditLog(limit) {
 function getHumanReviewQueue() {
   const ss    = SpreadsheetApp.getActiveSpreadsheet();
   const sheet = ss.getSheetByName(SHEET_NAMES.HUMAN_REVIEW);
-  const rows  = _sheetRows(sheet, 14);
+  const rows  = _sheetRows(sheet, 15);
   if (!rows.length) return [];
 
   return rows
@@ -96,6 +97,7 @@ function getHumanReviewQueue() {
       confidence:      parseFloat(r[6]) || 0,
       draftReply:      r[7],
       escalationReason:r[8],
+      reasoning:       r[14] || '',
     }));
 }
 
@@ -132,6 +134,9 @@ function getMemoryEntries(limit) {
 
 function _sheetRows(sheet, numCols) {
   if (!sheet || sheet.getLastRow() <= 1) return [];
-  const n = sheet.getLastRow() - 1;
-  return sheet.getRange(2, 1, n, numCols).getValues();
+  const n    = sheet.getLastRow() - 1;
+  // Clamp to the sheet's real width so requesting a not-yet-migrated column
+  // (e.g. Reasoning) never throws an out-of-bounds error.
+  const cols = Math.min(numCols, sheet.getLastColumn());
+  return sheet.getRange(2, 1, n, cols).getValues();
 }

@@ -68,8 +68,46 @@ function evaluatePolicy(emailData, geminiResult) {
     return decision;
   }
 
+  // ── Rule 5: Required fields missing → request more info ──────────────────
+  // The agent is confident about the category but the email lacks details it
+  // needs to actually complete the action (e.g. a registration with no date).
+  const missing = getMissingFields(geminiResult.category, geminiResult.extracted_fields);
+  if (missing.length > 0) {
+    decision.action       = 'request_info';
+    decision.missingFields = missing;
+    decision.reasons.push(`Missing required detail(s): ${missing.join(', ')}`);
+    return decision;
+  }
+
   // All rules passed — proceed automatically
   return decision;
+}
+
+/**
+ * Required fields per category. If any are blank in the extracted data, the
+ * agent asks the sender to provide them instead of completing the action.
+ * Only categories listed here are gated; everything else proceeds freely.
+ */
+const REQUIRED_FIELDS = {
+  event_registration: [
+    { key: 'event_name', label: 'which event you want to register for' },
+    { key: 'event_date', label: 'the event date you are interested in' },
+  ],
+};
+
+/** Returns an array of human-readable labels for fields that are missing. */
+function getMissingFields(category, fields) {
+  const required = REQUIRED_FIELDS[category];
+  if (!required) return [];
+  fields = fields || {};
+  return required
+    .filter(f => {
+      const v = fields[f.key];
+      return !v || String(v).trim() === '' ||
+             String(v).trim().toLowerCase() === 'not specified' ||
+             String(v).trim().toLowerCase() === 'unknown';
+    })
+    .map(f => f.label);
 }
 
 /**

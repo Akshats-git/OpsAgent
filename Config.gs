@@ -11,9 +11,11 @@ const SHEET_NAMES = {
   TEMPLATES:    'Templates',
 };
 
-const GMAIL_LABEL        = 'OpsAgent/Processed';
-const TRIGGER_FUNCTION   = 'processEmails';
-const TRIGGER_INTERVAL_M = 5;
+const GMAIL_LABEL          = 'OpsAgent/Processed';
+const AWAITING_INFO_LABEL  = 'OpsAgent/AwaitingInfo';
+const TRIGGER_FUNCTION     = 'processEmails';
+const TRIGGER_INTERVAL_M   = 5;
+const DIGEST_FUNCTION      = 'generateWeeklyDigest';
 
 const CONFIG_CACHE_KEY = 'opsagent_config_v1';
 const CONFIG_CACHE_TTL = 300; // seconds — matches trigger interval

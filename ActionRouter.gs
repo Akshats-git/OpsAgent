@@ -23,12 +23,14 @@ function executeActions(emailData, geminiResult, policyDecision, requiredActions
     chat_alert_sent:  false,
     audit_logged:     false,
     human_review_logged: false,
+    info_requested:   false,
     errors:           [],
   };
 
   const autoReplyEnabled = getConfigValue('AUTO_REPLY_ENABLED', 'true') === 'true';
   const orgName          = getConfigValue('ORG_NAME', 'Our Organization');
   const isAutoAction     = policyDecision.action === 'auto';
+  const isRequestInfo    = policyDecision.action === 'request_info';
 
   // ── 1. Send reply (only when auto-actioning and reply is enabled) ─────────
   if (requiredActions.includes('reply') && autoReplyEnabled && isAutoAction) {
@@ -37,6 +39,16 @@ function executeActions(emailData, geminiResult, policyDecision, requiredActions
       results.reply_sent = true;
     } catch (e) {
       results.errors.push('reply: ' + e.message);
+    }
+  }
+
+  // ── 1b. Request more info (confident category, but details missing) ───────
+  if (isRequestInfo && autoReplyEnabled) {
+    try {
+      _sendInfoRequest(emailData, policyDecision.missingFields, geminiResult, orgName);
+      results.info_requested = true;
+    } catch (e) {
+      results.errors.push('info_request: ' + e.message);
     }
   }
 
@@ -92,9 +104,16 @@ function executeActions(emailData, geminiResult, policyDecision, requiredActions
     results.errors.push('audit_log: ' + e.message);
   }
 
-  // ── 7. Apply "OpsAgent/Processed" Gmail label — always ───────────────────
+  // ── 7. Gmail labelling ────────────────────────────────────────────────────
+  // For request_info we do NOT mark Processed — we mark the thread read and tag
+  // it AwaitingInfo. When the sender replies with the details, the thread goes
+  // unread again, re-enters the queue, and gets completed on the next run.
   try {
-    _applyProcessedLabel(emailData.threadId);
+    if (isRequestInfo) {
+      _markAwaitingInfo(emailData.threadId);
+    } else {
+      _applyProcessedLabel(emailData.threadId);
+    }
   } catch (e) {
     results.errors.push('label: ' + e.message);
   }
@@ -133,6 +152,43 @@ function _applyProcessedLabel(threadId) {
   const label  = GmailApp.getUserLabelByName(GMAIL_LABEL);
   const thread = GmailApp.getThreadById(threadId);
   if (label && thread) label.addToThread(thread);
+  // If this thread was previously awaiting info, clear that tag now.
+  const awaiting = GmailApp.getUserLabelByName(AWAITING_INFO_LABEL);
+  if (awaiting && thread) {
+    try { awaiting.removeFromThread(thread); } catch (e) { /* not present */ }
+  }
+}
+
+/**
+ * Sends a friendly clarification email listing the specific details we still
+ * need, then marks the thread read + tags it AwaitingInfo so it re-enters the
+ * queue only when the sender replies.
+ */
+function _sendInfoRequest(emailData, missingFields, geminiResult, orgName) {
+  const thread = GmailApp.getThreadById(emailData.threadId);
+  if (!thread) throw new Error('Thread not found: ' + emailData.threadId);
+
+  const fields = (missingFields && missingFields.length)
+    ? missingFields : ['a few more details to proceed'];
+  const bullets = fields.map(f => `  • ${f}`).join('\n');
+
+  const body =
+    `Thanks so much for reaching out — we'd love to help with this!\n\n` +
+    `Before we can complete your request, could you share:\n\n${bullets}\n\n` +
+    `Just reply to this email with those details and we'll take it from there.\n\n` +
+    `—\n${orgName} Team\n*(Automated response — powered by AI)*`;
+
+  thread.reply(body);
+  thread.markRead();
+}
+
+function _markAwaitingInfo(threadId) {
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return;
+  const label = GmailApp.getUserLabelByName(AWAITING_INFO_LABEL) ||
+                GmailApp.createLabel(AWAITING_INFO_LABEL);
+  label.addToThread(thread);
+  thread.markRead(); // belt-and-suspenders so it won't re-match is:unread
 }
 
 // ---------------------------------------------------------------------------
@@ -242,6 +298,7 @@ function _logAudit(emailData, geminiResult, policyDecision, results, requiredAct
 
   const taken = [];
   if (results.reply_sent)           taken.push('auto_reply');
+  if (results.info_requested)       taken.push('requested_info');
   if (results.calendar_event_id)    taken.push('calendar_event');
   if (results.form_sent)            taken.push('form_link');
   if (results.chat_alert_sent)      taken.push('chat_alert');
@@ -261,6 +318,7 @@ function _logAudit(emailData, geminiResult, policyDecision, results, requiredAct
     policyDecision.sensitiveFlags.join(', '),
     JSON.stringify(geminiResult.extracted_fields).substring(0, 500),
     results.errors.join('; '),
+    geminiResult.reasoning || '',   // Reasoning (col 14) — transparency
   ]);
 }
 
@@ -287,6 +345,7 @@ function _logHumanReview(emailData, geminiResult, policyDecision) {
     '',          // ReviewTimestamp
     'Pending',   // Status
     '',          // Notes
+    geminiResult.reasoning || '',   // AgentReasoning (col 15) — why it chose this
   ]);
 }
 

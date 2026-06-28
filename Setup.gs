@@ -13,6 +13,7 @@ function setup() {
   _setupGmailLabel();
   _setupTimeTrigger();
   _setupOnEditTrigger();
+  _setupDigestTrigger();
 
   Logger.log('OpsAgent: Setup complete.');
   SpreadsheetApp.getUi().alert(
@@ -59,18 +60,20 @@ function _setupSheets(ss) {
     ['AUTO_REPLY_ENABLED',   'true',                'false = dry-run mode (no emails sent)'],
     ['CALENDAR_ENABLED',     'true',                'false = skip Calendar event creation'],
     ['CHAT_ALERTS_ENABLED',  'true',                'false = skip Google Chat alerts'],
+    ['DIGEST_ENABLED',       'true',                'false = skip the weekly Google Docs digest'],
+    ['REPORTS_FOLDER_NAME',  'OpsAgent Reports',    'Google Drive folder where weekly digests are saved'],
   ]);
 
   _makeSheet(ss, SHEET_NAMES.AUDIT_LOG, [[
     'Timestamp','EmailID','ThreadID','Sender','Subject',
     'Category','Confidence','ActionsTaken','Status',
-    'DraftReply','SensitiveFlags','ExtractedFields','Error',
+    'DraftReply','SensitiveFlags','ExtractedFields','Error','Reasoning',
   ]]);
 
   _makeSheet(ss, SHEET_NAMES.HUMAN_REVIEW, [[
     'Timestamp','EmailID','ThreadID','Sender','Subject',
     'AgentCategory','Confidence','DraftReply','EscalationReason',
-    'HumanOverrideCategory','ReviewedBy','ReviewTimestamp','Status','Notes',
+    'HumanOverrideCategory','ReviewedBy','ReviewTimestamp','Status','Notes','AgentReasoning',
   ]]);
 
   _makeSheet(ss, SHEET_NAMES.MEMORY, [[
@@ -166,13 +169,15 @@ function _makeSheet(ss, name, rows) {
 // ---------------------------------------------------------------------------
 
 function _setupGmailLabel() {
-  const existing = GmailApp.getUserLabels().some(l => l.getName() === GMAIL_LABEL);
-  if (!existing) {
-    GmailApp.createLabel(GMAIL_LABEL);
-    Logger.log('Created Gmail label: ' + GMAIL_LABEL);
-  } else {
-    Logger.log('Gmail label already exists: ' + GMAIL_LABEL);
-  }
+  [GMAIL_LABEL, AWAITING_INFO_LABEL, 'OpsAgent/Quarantine'].forEach(name => {
+    const existing = GmailApp.getUserLabels().some(l => l.getName() === name);
+    if (!existing) {
+      GmailApp.createLabel(name);
+      Logger.log('Created Gmail label: ' + name);
+    } else {
+      Logger.log('Gmail label already exists: ' + name);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -200,4 +205,70 @@ function _setupOnEditTrigger() {
     .onEdit()
     .create();
   Logger.log('onEdit trigger installed for memory loop.');
+}
+
+function _setupDigestTrigger() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === DIGEST_FUNCTION) ScriptApp.deleteTrigger(t);
+  });
+  ScriptApp.newTrigger(DIGEST_FUNCTION)
+    .timeBased()
+    .onWeekDay(ScriptApp.WeekDay.MONDAY)
+    .atHour(8)
+    .create();
+  Logger.log('Weekly digest trigger set: ' + DIGEST_FUNCTION + ' Mondays 8am.');
+}
+
+// ---------------------------------------------------------------------------
+// Migration helper — run once after pulling Phase B if you already ran setup()
+// before. Adds new Config rows, new sheet columns, the new Gmail labels, and
+// the weekly digest trigger WITHOUT recreating or wiping any existing sheet.
+// ---------------------------------------------------------------------------
+
+function devUpgradeSheets() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  // 1. New Config rows (only added if the key is absent)
+  _ensureConfigRows(ss, [
+    ['AI_PROVIDER',         'gemini',            'AI provider: "gemini" or "openai"'],
+    ['OPENAI_MODEL',        'gpt-4o-mini',       'OpenAI model ID (used when AI_PROVIDER = openai)'],
+    ['DIGEST_ENABLED',      'true',              'false = skip the weekly Google Docs digest'],
+    ['REPORTS_FOLDER_NAME', 'OpsAgent Reports',  'Google Drive folder where weekly digests are saved'],
+  ]);
+
+  // 2. New trailing columns
+  _ensureColumn(ss, SHEET_NAMES.AUDIT_LOG,    'Reasoning');
+  _ensureColumn(ss, SHEET_NAMES.HUMAN_REVIEW, 'AgentReasoning');
+
+  // 3. New labels + digest trigger
+  _setupGmailLabel();
+  _setupDigestTrigger();
+
+  clearConfigCache();
+  Logger.log('devUpgradeSheets: migration complete.');
+  SpreadsheetApp.getUi().alert('Upgrade complete — Config rows, columns, labels, and the weekly digest trigger are now in place.');
+}
+
+/** Appends any Config keys that aren't already present. */
+function _ensureConfigRows(ss, rows) {
+  const sheet    = ss.getSheetByName(SHEET_NAMES.CONFIG);
+  const existing = sheet.getDataRange().getValues().map(r => String(r[0]).trim());
+  rows.forEach(row => {
+    if (existing.indexOf(row[0]) === -1) {
+      sheet.appendRow(row);
+      Logger.log('Config: added ' + row[0]);
+    }
+  });
+}
+
+/** Adds a trailing header column to a sheet if that header isn't present. */
+function _ensureColumn(ss, sheetName, header) {
+  const sheet  = ss.getSheetByName(sheetName);
+  if (!sheet) return;
+  const headers = sheet.getRange(1, 1, 1, sheet.getLastColumn()).getValues()[0].map(String);
+  if (headers.indexOf(header) !== -1) return;
+  const col = sheet.getLastColumn() + 1;
+  const cell = sheet.getRange(1, col);
+  cell.setValue(header).setBackground('#1a73e8').setFontColor('#ffffff').setFontWeight('bold');
+  Logger.log(`${sheetName}: added column "${header}" at ${col}`);
 }

@@ -137,4 +137,53 @@ Next up (Phase B), pending the user's call: Google Docs weekly digests in a Driv
 
 ---
 
+## Session 3 — Phase B (Reports, Smarter Workflows, Transparency)
+
+**Date:** 2026-06-11 (later still)
+
+With the loops closed in Phase A, Phase B was about going from "correct" to "complete" — filling the gaps against the example actions in the brief and making the agent's thinking visible. Three things shipped.
+
+### B1 — Weekly digest as a Google Doc (new file: `DigestReport.gs`)
+
+This closes two gaps at once: the brief's "generate summaries / generate reports" example actions, and the two Google technologies we'd promised but never wired up — **Docs and Drive**.
+
+`generateWeeklyDigest()` reads the last 7 days of the AuditLog, aggregates it (total processed, automation rate, review/info-request counts, complaints, quarantines, new memory corrections, average confidence, per-category breakdown, and a list of attention-worthy items), then builds a properly formatted Google Doc with a title, executive summary, two tables, and bulleted attention list. The doc is filed into an "OpsAgent Reports" Drive folder (auto-created if missing) and, if a Chat webhook is configured, the team gets a card with an **OPEN REPORT** button linking straight to it.
+
+It runs two ways: a weekly time trigger (Mondays 8am) and a **Digest** button I added to the dashboard header for on-demand generation during demos — clicking it opens the freshly generated doc in a new tab.
+
+One detail I got right early: the stats reader (`_readRecent`) reads the sheet's *actual* column width rather than a hardcoded count, so it doesn't break when columns get added later. That same defensiveness saved me in B3.
+
+### B2 — "Request more info" for incomplete emails
+
+This was the missing example action that makes the agent feel genuinely smart. Previously, if someone emailed "I'd like to register for your event!" with no event name or date, the agent would confidently send a *confirmation* for an event it knew nothing about and write a garbage row to the Registrations sheet. Now it recognises the gap and asks.
+
+Implementation: I added a third disposition to the policy engine alongside `auto` and `human_review` — **`request_info`**. There's a `REQUIRED_FIELDS` map (currently event_registration needs both an event name and a date) and a `getMissingFields()` check that runs *after* all the confidence/sensitivity rules pass. If the agent is confident about the category but the must-have fields are blank (or "not specified" / "unknown"), it flips to `request_info`, and the action router sends a friendly templated email listing exactly what's missing — no second Gemini call needed.
+
+The tricky part was the re-entry loop, which is the same idempotency tension from Phase A wearing a different hat. If I marked the thread `Processed`, the sender's reply-with-details would never get picked up. If I left it untouched, the thread stays unread and the agent asks for the same info every 5 minutes — an infinite nag loop. The fix: on a `request_info`, the agent sends the clarification, **marks the thread read**, and tags it `OpsAgent/AwaitingInfo` instead of `Processed`. The thread now sits quietly outside the `is:unread` query. The moment the sender replies, the thread goes unread again, re-enters the queue, gets reprocessed with the new details (the reply quotes the original for context), and — now complete — finally gets the `Processed` label, which also strips the `AwaitingInfo` tag on the way out. Clean state machine, no nagging.
+
+### B3 — Reasoning transparency
+
+The agent was already producing a `reasoning` field on every classification (e.g. "Mentions a budget and brand visibility, which indicates a sponsorship inquiry rather than a partnership") — and we were throwing it straight in the bin. For a criterion literally called *Agent Reasoning*, surfacing that was free points.
+
+Now the reasoning is persisted to a new trailing **Reasoning** column in the AuditLog and an **AgentReasoning** column in HumanReview, and shown in the UI: a small italic "↳ reasoning" subline under each audit row's subject, and a dedicated blue "Agent's reasoning" panel on every Human Review card — so a reviewer sees *why* the agent made the call it's asking them to check, not just the verdict.
+
+### The migration trap (and how I defused it)
+
+Adding columns to sheets is easy on a fresh install — `setup()` just creates them. The problem: the user had **already run `setup()`**, so their AuditLog had 13 columns and HumanReview had 14. Two failure modes loomed:
+
+1. New `appendRow` calls writing a 14th/15th value into a sheet whose header row was still the old width — cosmetically the data lands but the header cell is blank.
+2. The dashboard's `_sheetRows()` doing `getRange(2, 1, n, 14)` on a 13-column sheet → hard "out of bounds" crash.
+
+I fixed both. `_sheetRows()` now clamps its column count to `sheet.getLastColumn()`, so asking for a column that doesn't exist yet returns `undefined` (which maps to an empty string) instead of throwing. And I wrote a one-shot **`devUpgradeSheets()`** migration that idempotently adds the new Config rows, the two new header columns, the new Gmail labels (`AwaitingInfo`, `Quarantine`), and the weekly digest trigger — all without recreating or wiping a single existing sheet. Run it once after pulling Phase B and an already-live instance is fully upgraded.
+
+Also added the `documents` OAuth scope to the manifest, since `DocumentApp` needs it and we maintain an explicit scope list.
+
+### Where we stand
+
+The agent now covers the full sweep of the brief's example actions: auto-reply, request more information, update Sheets, generate summaries/reports, escalate to humans, create workflow records, and route alerts. Every decision is logged *with its reasoning*, uncertain cases round-trip cleanly through a human, incomplete cases round-trip cleanly through the sender, and the whole week rolls up into a shareable Doc. Three new Google technologies joined the stack this session (Docs, Drive, and a real use for the AwaitingInfo workflow state).
+
+Deployment note for an existing instance: paste the updated files + the new `DigestReport.gs`, run **`devUpgradeSheets()`** once, then redeploy the web app as a new version.
+
+---
+
 *More entries to follow as the system is deployed and iterated.*

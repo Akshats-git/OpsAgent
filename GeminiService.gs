@@ -13,6 +13,9 @@ const CATEGORIES = [
   'complaint',
   'partnership',
   'feedback',
+  'community_query',
+  'escalation',
+  'internal_ops',
   'general_support',
 ];
 
@@ -198,6 +201,9 @@ ${CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n')}
 - complaint           : Express empathy; DO NOT attempt to resolve; promise human follow-up within 24 h.
 - partnership         : Express collaborative interest; 5-day response SLA.
 - feedback            : Thank sincerely; say feedback will be shared with the team.
+- community_query     : A general question from a community member; answer helpfully and point to resources.
+- escalation          : An urgent/serious matter explicitly demanding attention (legal, safety, press, exec). Acknowledge and assure immediate human escalation.
+- internal_ops        : An internal team/operations message (logistics, scheduling, admin between organisers). Acknowledge and route to the team.
 - general_support     : Answer helpfully and concisely.
 
 ## Templates (use as tone/style guidance, not verbatim)
@@ -224,7 +230,7 @@ Respond with ONLY valid JSON — no markdown fences, no extra text.
 
 Required JSON shape:
 {
-  "category": "<one of the 8 categories>",
+  "category": "<one of the categories listed above>",
   "confidence": <0.0–1.0>,
   "reasoning": "<1–2 sentences>",
   "extracted_fields": {

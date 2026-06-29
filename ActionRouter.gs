@@ -96,6 +96,13 @@ function executeActions(emailData, geminiResult, policyDecision, requiredActions
     }
   }
 
+  // ── 5b. Team routing — label the thread with its owning team ─────────────
+  try {
+    _routeToTeam(emailData.threadId, geminiResult.category);
+  } catch (e) {
+    results.errors.push('routing: ' + e.message);
+  }
+
   // ── 6. Audit log — always ─────────────────────────────────────────────────
   try {
     _logAudit(emailData, geminiResult, policyDecision, results, requiredActions);
@@ -189,6 +196,33 @@ function _markAwaitingInfo(threadId) {
                 GmailApp.createLabel(AWAITING_INFO_LABEL);
   label.addToThread(thread);
   thread.markRead(); // belt-and-suspenders so it won't re-match is:unread
+}
+
+/**
+ * Routes a thread to its owning team by applying an "OpsAgent/Team/<Team>"
+ * Gmail label (so the inbox is organised by team) and, if a notify address is
+ * configured, sending that team a brief heads-up.
+ */
+function _routeToTeam(threadId, category) {
+  const route = getRoute(category);
+  if (!route || !route.team) return;
+
+  const thread = GmailApp.getThreadById(threadId);
+  if (!thread) return;
+
+  const labelName = 'OpsAgent/Team/' + route.team;
+  const label = GmailApp.getUserLabelByName(labelName) || GmailApp.createLabel(labelName);
+  label.addToThread(thread);
+
+  if (route.notifyEmail) {
+    const subject = thread.getFirstMessageSubject() || '(No Subject)';
+    GmailApp.sendEmail(
+      route.notifyEmail,
+      `[OpsAgent → ${route.team}] ${subject}`,
+      `A new "${category}" email has been routed to the ${route.team} team.\n\n` +
+      `Subject: ${subject}\n\nOpen the thread in the shared inbox to action it.`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------

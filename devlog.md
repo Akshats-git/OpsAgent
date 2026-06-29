@@ -186,4 +186,40 @@ Deployment note for an existing instance: paste the updated files + the new `Dig
 
 ---
 
+## Session 4 — Phase C (Coverage, Analytics, Polish)
+
+**Date:** 2026-06-11 (final session of the day)
+
+Phase C was the "make it whole and make it shine" pass — broadening category coverage to match the brief, adding the analytics a judge expects to see, and writing the connective tissue (README, demo seeding) that turns a pile of `.gs` files into something someone else can actually run.
+
+### C1 — Three more categories + real team routing
+
+The brief lists ten example categories; we'd shipped eight. Added the missing three: **community_query**, **escalation**, and **internal_ops**. That meant touching the category list in `GeminiService.gs`, the per-category prompt guidelines, the Templates defaults, the frontend dropdown + colour map, and the policy rules. Escalation now joins complaint as an *always-human-review* category — the kind of email (legal notices, press, safety) you never want an LLM auto-answering.
+
+The more interesting addition was **team routing**, which satisfies the brief's "route emails to specific teams" action. I added a `Routing` sheet mapping each category to an owning team (Sponsorship → Sponsorship team, complaints → Support, escalations → Leadership, etc.), fully admin-editable. For every processed email the action router now applies an `OpsAgent/Team/<Team>` Gmail label, so the shared inbox self-organises by team, and — if an optional notify address is set in the Routing sheet — fires a short heads-up email to that team. Kept it lightweight: labelling is the visible, zero-config default; email notification is opt-in per row.
+
+### C2 — Activity-over-time trend
+
+The dashboard had a category donut and health bars but no sense of *momentum*. Added `getActivityTrend(7)` on the backend, which buckets the AuditLog into the last seven calendar days and splits each day into auto / review / info-request counts. On the front end that became a stacked bar chart (Chart.js) sitting between the summary cards and the tabs. Now you can see at a glance whether volume is climbing and whether the automation rate is holding as it does. It refreshes on the same 30-second cycle and after every Run Now / approve / dismiss.
+
+(Note: the other half of the original C2 — an approve-from-the-dashboard button — already shipped back in Phase A, so this session was just the analytics.)
+
+### C3 — The stuff that makes it usable by someone else
+
+**Demo seeding (`DemoData.gs`).** This one came from a real constraint I hit while thinking through the demo. The obvious "seed some test emails" approach is to have the script email itself — but the agent deliberately skips mail from its own address (the self-reply guard from Phase A), so seeded self-mail would never get processed. Rather than fight that, `seedDemoData()` writes realistic rows *directly* into the AuditLog, HumanReview, Memory, and Registrations sheets — 15 varied audit entries spread across the last 6 days (so the new trend chart actually has a shape), two pending review items, three memory corrections, three registrations. The dashboard goes from empty to fully alive in one click, which is exactly what you want for screenshots and judging. `clearDemoData()` wipes it back to clean headers. For a genuine *live* pipeline demo, the README is explicit: send from a different account.
+
+**README.md.** Replaced the one-line stub with a proper front door: the "why it's a system not a chatbot" table, a **Mermaid architecture diagram** that renders right on GitHub (showing the full flow from inbox through AI → policy → the three dispositions → actions → audit → digest/dashboard), the Google-tech list, the sheet-by-sheet control-panel guide, setup steps, a six-beat demo script, and the reliability notes. It's the document that makes the project reproducible by someone who didn't build it.
+
+### A nice save from tooling discipline
+
+While wiring the trend chart to refresh alongside the donut, I used a `perl` one-liner to update the several `buildChart()` call sites at once — and a sloppy second substitution in it left an `XPLACEHOLDERX` token buried inside the `approve()` and `dismiss()` methods, silently breaking the human-review buttons. The brace-balance smoke check flagged the HTML as off, and extracting the inline script and running `node --check` on it pointed at the exact line. Fixed both occurrences, re-checked, clean. Lesson reinforced: after any scripted bulk edit to JS-in-HTML, actually parse the result — don't eyeball it.
+
+### Where the project landed
+
+OpsAgent now covers eleven categories and every example action in the brief: auto-reply, request more info, update Sheets, generate summaries/reports, escalate to humans, create workflow records, route to teams, and send forms. Nine Google technologies are genuinely in use. Every decision is logged with its reasoning, the dashboard shows live stats + a 7-day trend + the review queue + the memory, and the whole thing is operable from sheets by a non-technical admin. The memory loop — the original differentiator — is fully closed: correct the agent once and it carries that lesson forward.
+
+From here it's about field-testing with real inbox traffic and tuning thresholds/templates to the org's actual voice.
+
+---
+
 *More entries to follow as the system is deployed and iterated.*

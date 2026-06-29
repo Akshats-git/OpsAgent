@@ -24,10 +24,10 @@ function evaluatePolicy(emailData, geminiResult) {
     sensitiveFlags: Array.isArray(geminiResult.sensitive_flags) ? [...geminiResult.sensitive_flags] : [],
   };
 
-  // ── Rule 1: Complaints ALWAYS go to human review ────────────────────────
-  if (geminiResult.category === 'complaint') {
+  // ── Rule 1: Complaints & escalations ALWAYS go to human review ──────────
+  if (geminiResult.category === 'complaint' || geminiResult.category === 'escalation') {
     decision.action = 'human_review';
-    decision.reasons.push('Category is "complaint" — always requires human review');
+    decision.reasons.push(`Category is "${geminiResult.category}" — always requires human review`);
     return decision; // No further checks needed
   }
 
@@ -133,6 +133,12 @@ function getRequiredActions(category) {
       break;
 
     case 'complaint':
+    case 'escalation':
+      actions.add('chat_alert');
+      break;
+
+    case 'internal_ops':
+      // Internal logistics — always notify the team channel
       actions.add('chat_alert');
       break;
 
@@ -146,6 +152,28 @@ function getRequiredActions(category) {
   }
 
   return [...actions];
+}
+
+// ---------------------------------------------------------------------------
+// Team routing — maps each category to an owning team. Read from the Routing
+// sheet so admins can re-assign teams without touching code.
+// ---------------------------------------------------------------------------
+
+/**
+ * Returns { team, notifyEmail } for a category, or null if no routing exists.
+ */
+function getRoute(category) {
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName(SHEET_NAMES.ROUTING);
+  if (!sheet || sheet.getLastRow() <= 1) return null;
+
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, 3).getValues();
+  for (let i = 0; i < rows.length; i++) {
+    if (String(rows[i][0]).trim() === category) {
+      return { team: String(rows[i][1]).trim(), notifyEmail: String(rows[i][2]).trim() };
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

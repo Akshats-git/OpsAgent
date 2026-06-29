@@ -191,6 +191,21 @@
     </div>
   </div>
 
+  <!-- ── ACTIVITY TREND ── -->
+  <div x-show="!loading" x-cloak class="fade-in">
+    <div class="rounded-2xl bg-slate-900 border border-slate-800 p-5">
+      <div class="flex items-center justify-between mb-4">
+        <h2 class="text-sm font-semibold text-slate-300">Activity — Last 7 Days</h2>
+        <div class="flex items-center gap-4 text-xs text-slate-400">
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-emerald-500"></span>Auto</span>
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-amber-400"></span>Review</span>
+          <span class="flex items-center gap-1.5"><span class="w-2.5 h-2.5 rounded-sm bg-sky-400"></span>Info req.</span>
+        </div>
+      </div>
+      <div class="h-56"><canvas id="trendChart"></canvas></div>
+    </div>
+  </div>
+
   <!-- ── TABS ── -->
   <div x-show="!loading" x-cloak class="fade-in">
     <div class="flex gap-1 border-b border-slate-800 mb-4">
@@ -399,6 +414,9 @@ const CAT_COLORS = {
   complaint:            { bg: 'bg-red-900/60',      text: 'text-red-400',     hex: '#f87171' },
   partnership:          { bg: 'bg-indigo-900/60',   text: 'text-indigo-400',  hex: '#818cf8' },
   feedback:             { bg: 'bg-teal-900/60',     text: 'text-teal-400',    hex: '#2dd4bf' },
+  community_query:      { bg: 'bg-cyan-900/60',     text: 'text-cyan-400',    hex: '#22d3ee' },
+  escalation:           { bg: 'bg-rose-900/70',     text: 'text-rose-400',    hex: '#fb7185' },
+  internal_ops:         { bg: 'bg-amber-900/50',    text: 'text-amber-300',   hex: '#fbbf24' },
   general_support:      { bg: 'bg-slate-700/60',    text: 'text-slate-300',   hex: '#94a3b8' },
   ERROR:                { bg: 'bg-red-900/80',      text: 'text-red-300',     hex: '#ef4444' },
 };
@@ -418,6 +436,8 @@ function app() {
     memoryEntries: [],
     chartLegend:   [],
     chart:         null,
+    trendChart:    null,
+    trendData:     null,
     refreshTimer:  null,
     toast:         { show: false, ok: true, msg: '' },
 
@@ -430,14 +450,15 @@ function app() {
     categories: [
       'sponsorship', 'event_registration', 'speaker_application',
       'volunteer_application', 'complaint', 'partnership',
-      'feedback', 'general_support',
+      'feedback', 'community_query', 'escalation', 'internal_ops',
+      'general_support',
     ],
 
     // Init
     async init() {
       await this.loadAll();
       this.loading = false;
-      this.$nextTick(() => this.buildChart());
+      this.$nextTick(() => { this.buildChart(); this.buildTrendChart(); });
       this.startAutoRefresh();
     },
 
@@ -448,8 +469,18 @@ function app() {
         this.loadAuditLog(),
         this.loadReviewQueue(),
         this.loadMemory(),
+        this.loadTrend(),
       ]);
       this.lastRefresh = new Date().toLocaleTimeString();
+    },
+
+    loadTrend() {
+      return new Promise(resolve => {
+        google.script.run
+          .withSuccessHandler(data => { this.trendData = data; resolve(); })
+          .withFailureHandler(e   => { console.error('trend:', e); resolve(); })
+          .getActivityTrend(7);
+      });
     },
 
     loadStats() {
@@ -521,6 +552,38 @@ function app() {
       });
     },
 
+    buildTrendChart() {
+      const t = this.trendData;
+      const ctx = document.getElementById('trendChart');
+      if (!ctx || !t) return;
+      if (this.trendChart) this.trendChart.destroy();
+
+      const stack = (label, data, color) => ({
+        label, data, backgroundColor: color, borderRadius: 4, stack: 'a',
+      });
+
+      this.trendChart = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: t.labels,
+          datasets: [
+            stack('Auto',      t.auto,   '#10b981'),
+            stack('Review',    t.review, '#fbbf24'),
+            stack('Info req.', t.info,   '#38bdf8'),
+          ],
+        },
+        options: {
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { stacked: true, grid: { display: false }, ticks: { color: '#64748b', font: { size: 11 } } },
+            y: { stacked: true, beginAtZero: true, grid: { color: '#1e293b' }, ticks: { color: '#64748b', precision: 0 } },
+          },
+          animation: { duration: 700 },
+        },
+      });
+    },
+
     // ── Actions ───────────────────────────────────────────────────────────
     async runNow() {
       this.running = true;
@@ -529,7 +592,7 @@ function app() {
           this.running = false;
           this.showToast(res.success, res.success ? 'Run complete! Data refreshed.' : 'Run failed: ' + res.message);
           if (res.success) await this.loadAll();
-          this.$nextTick(() => this.buildChart());
+          this.$nextTick(() => { this.buildChart(); this.buildTrendChart(); });
         })
         .withFailureHandler(e => {
           this.running = false;
@@ -544,7 +607,7 @@ function app() {
         .withSuccessHandler(async res => {
           item._busy = false;
           this.showToast(res.success, res.message);
-          if (res.success) { await this.loadAll(); this.$nextTick(() => this.buildChart()); }
+          if (res.success) { await this.loadAll(); this.$nextTick(() => { this.buildChart(); this.buildTrendChart(); }); }
         })
         .withFailureHandler(e => { item._busy = false; this.showToast(false, 'Error: ' + e.message); })
         .approveAndSend(item.emailId, item.draftReply, item.agentCategory);
@@ -556,7 +619,7 @@ function app() {
         .withSuccessHandler(async res => {
           item._busy = false;
           this.showToast(res.success, res.message);
-          if (res.success) { await this.loadAll(); this.$nextTick(() => this.buildChart()); }
+          if (res.success) { await this.loadAll(); this.$nextTick(() => { this.buildChart(); this.buildTrendChart(); }); }
         })
         .withFailureHandler(e => { item._busy = false; this.showToast(false, 'Error: ' + e.message); })
         .dismissReview(item.emailId, '');
@@ -581,6 +644,7 @@ function app() {
         if (this.activeTab === 'review' && this.reviewQueue.some(i => i._busy)) return;
         await this.loadAll();
         this.buildChart();
+        this.buildTrendChart();
       }, 30000); // refresh every 30 s
     },
 

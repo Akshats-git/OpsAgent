@@ -101,6 +101,45 @@ function getHumanReviewQueue() {
     }));
 }
 
+/**
+ * Buckets the AuditLog by day for the last N days so the dashboard can draw a
+ * trend chart. Returns { labels:[], auto:[], review:[], info:[] } aligned by index.
+ */
+function getActivityTrend(days) {
+  if (!days) days = 7;
+  const ss    = SpreadsheetApp.getActiveSpreadsheet();
+  const rows  = _sheetRows(ss.getSheetByName(SHEET_NAMES.AUDIT_LOG), 14);
+
+  // Build an ordered list of day-keys for the window (oldest → newest)
+  const tz     = Session.getScriptTimeZone();
+  const labels = [], keys = [], buckets = {};
+  for (let i = days - 1; i >= 0; i--) {
+    const d   = new Date();
+    d.setDate(d.getDate() - i);
+    const key = Utilities.formatDate(d, tz, 'yyyy-MM-dd');
+    keys.push(key);
+    labels.push(Utilities.formatDate(d, tz, 'MMM d'));
+    buckets[key] = { auto: 0, review: 0, info: 0 };
+  }
+
+  rows.forEach(r => {
+    if (!r[0] || r[5] === 'ERROR') return;
+    const key = Utilities.formatDate(new Date(r[0]), tz, 'yyyy-MM-dd');
+    if (!buckets[key]) return;
+    const status = String(r[8]);
+    if (status === 'human_review')      buckets[key].review++;
+    else if (status === 'request_info') buckets[key].info++;
+    else                                buckets[key].auto++;
+  });
+
+  return {
+    labels: labels,
+    auto:   keys.map(k => buckets[k].auto),
+    review: keys.map(k => buckets[k].review),
+    info:   keys.map(k => buckets[k].info),
+  };
+}
+
 /** Manually triggers a processing run — called by the "Run Now" button. */
 function triggerManualRun() {
   try {

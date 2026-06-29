@@ -16,12 +16,25 @@ function setup() {
   _setupDigestTrigger();
 
   Logger.log('OpsAgent: Setup complete.');
-  SpreadsheetApp.getUi().alert(
+  _safeAlert(
     'Setup complete!\n\n' +
     'One remaining step:\n' +
     'Extensions → Apps Script → Project Settings → Script Properties\n' +
     'Add a property named  GEMINI_API_KEY  with your Gemini API key.'
   );
+}
+
+/**
+ * Shows a UI alert when one is available, otherwise logs. getUi() throws when
+ * a function is run from the editor/trigger context (no bound UI), so anything
+ * runnable both ways must go through this.
+ */
+function _safeAlert(msg) {
+  try {
+    SpreadsheetApp.getUi().alert(msg);
+  } catch (e) {
+    Logger.log('[alert] ' + msg);
+  }
 }
 
 /** Removes the time-driven trigger to pause the agent without deleting data. */
@@ -123,6 +136,21 @@ function _setupSheets(ss) {
      'Thank you so much for taking the time to share your feedback!',
      'Your input genuinely helps us improve — we really appreciate it.',
      'FALSE', ''],
+    ['community_query',     'Helpful and welcoming',
+     'Answer the question, point to relevant resources or links',
+     'Thanks for reaching out to the [ORG_NAME] community!',
+     'Hope that helps — feel free to ask if anything is unclear.',
+     'FALSE', ''],
+    ['escalation',          'Serious and reassuring',
+     'Acknowledge urgency, DO NOT resolve, assure immediate human escalation',
+     'Thank you for flagging this — we are treating it with priority.',
+     'This has been escalated to our team and someone will respond very shortly.',
+     'FALSE', ''],
+    ['internal_ops',        'Brief and collegial',
+     'Acknowledge, confirm it will be routed to the relevant organisers',
+     'Thanks — noted and routing this to the team.',
+     'Will follow up internally and circle back.',
+     'FALSE', ''],
     ['general_support',     'Helpful and friendly',
      'Answer directly and concisely, offer follow-up if needed',
      'Thank you for reaching out to [ORG_NAME]!',
@@ -130,7 +158,27 @@ function _setupSheets(ss) {
      'FALSE', ''],
   ]);
 
+  _makeSheet(ss, SHEET_NAMES.ROUTING, _routingDefaults());
+
   Logger.log('Sheets ready.');
+}
+
+/** Default category → team routing table. Shared by setup and migration. */
+function _routingDefaults() {
+  return [
+    ['Category','Team','NotifyEmail'],
+    ['sponsorship',          'Sponsorship',  ''],
+    ['partnership',          'Partnerships', ''],
+    ['event_registration',   'Events',       ''],
+    ['speaker_application',  'Events',       ''],
+    ['volunteer_application','Volunteers',   ''],
+    ['complaint',            'Support',      ''],
+    ['escalation',           'Leadership',   ''],
+    ['feedback',             'Support',      ''],
+    ['community_query',      'Support',      ''],
+    ['internal_ops',         'Operations',   ''],
+    ['general_support',      'Support',      ''],
+  ];
 }
 
 /**
@@ -240,13 +288,21 @@ function devUpgradeSheets() {
   _ensureColumn(ss, SHEET_NAMES.AUDIT_LOG,    'Reasoning');
   _ensureColumn(ss, SHEET_NAMES.HUMAN_REVIEW, 'AgentReasoning');
 
-  // 3. New labels + digest trigger
+  // 3. Routing sheet (Phase C) — created only if absent
+  if (!ss.getSheetByName(SHEET_NAMES.ROUTING)) {
+    _makeSheet(ss, SHEET_NAMES.ROUTING, _routingDefaults());
+  }
+
+  // 4. New-category template rows (Phase C) — appended if absent
+  _ensureTemplateRows(ss);
+
+  // 5. New labels + digest trigger
   _setupGmailLabel();
   _setupDigestTrigger();
 
   clearConfigCache();
   Logger.log('devUpgradeSheets: migration complete.');
-  SpreadsheetApp.getUi().alert('Upgrade complete — Config rows, columns, labels, and the weekly digest trigger are now in place.');
+  _safeAlert('Upgrade complete — Config rows, columns, labels, and the weekly digest trigger are now in place.');
 }
 
 /** Appends any Config keys that aren't already present. */
@@ -257,6 +313,33 @@ function _ensureConfigRows(ss, rows) {
     if (existing.indexOf(row[0]) === -1) {
       sheet.appendRow(row);
       Logger.log('Config: added ' + row[0]);
+    }
+  });
+}
+
+/** Appends template rows for the Phase C categories if they're missing. */
+function _ensureTemplateRows(ss) {
+  const sheet = ss.getSheetByName(SHEET_NAMES.TEMPLATES);
+  if (!sheet) return;
+  const existing = sheet.getDataRange().getValues().map(r => String(r[0]).trim());
+  const newRows = [
+    ['community_query', 'Helpful and welcoming',
+     'Answer the question, point to relevant resources or links',
+     'Thanks for reaching out to the [ORG_NAME] community!',
+     'Hope that helps — feel free to ask if anything is unclear.', 'FALSE', ''],
+    ['escalation', 'Serious and reassuring',
+     'Acknowledge urgency, DO NOT resolve, assure immediate human escalation',
+     'Thank you for flagging this — we are treating it with priority.',
+     'This has been escalated to our team and someone will respond very shortly.', 'FALSE', ''],
+    ['internal_ops', 'Brief and collegial',
+     'Acknowledge, confirm it will be routed to the relevant organisers',
+     'Thanks — noted and routing this to the team.',
+     'Will follow up internally and circle back.', 'FALSE', ''],
+  ];
+  newRows.forEach(row => {
+    if (existing.indexOf(row[0]) === -1) {
+      sheet.appendRow(row);
+      Logger.log('Templates: added ' + row[0]);
     }
   });
 }
